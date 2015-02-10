@@ -38,7 +38,7 @@ int parse_packet(pcaprec_hdr_t *header,void * buffer,ether_hdr_t ** ether,dot1q_
     char string1[BUFFER_SIZE];
     char string2[BUFFER_SIZE];
     
-    
+    dot1q_hdr_t * internal_dot1q;
     
     // Ethernet
     *ether = (ether_hdr_t*) (buffer + offset);
@@ -52,14 +52,22 @@ int parse_packet(pcaprec_hdr_t *header,void * buffer,ether_hdr_t ** ether,dot1q_
     if (ntohs((*ether)->type) == 0x8100) {
         *dot1q = (dot1q_hdr_t*) (buffer + offset);
         vlan = DOT1Q_VLAN(*dot1q);
+        
+        internal_dot1q = *dot1q;
+        
+        while(ntohs(internal_dot1q->type) == 0x8100) {
+            offset += sizeof (dot1q_hdr_t);
+            internal_dot1q = (dot1q_hdr_t*) (buffer + offset);
+        }
         offset += sizeof (dot1q_hdr_t);
+        
         if(offset >= header->incl_len) {
             ret_val |= PARSE_SHORT_PACKET|PARSE_SKIP;
             return ret_val;
         }
+        
     } else {
         ret_val |= PARSE_NO_VLAN;
-        //printf("Warning: no dot1q tag\n");
     }
 
     // IP
@@ -149,13 +157,25 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    printf("First Pass\n");
+    fflush(stdout);
+    
     if (pcap_read_headers(&pcap_hdr, fpr) == 0) {
         while (pcap_read_packet(&header, (void *) buffer, fpr) == 0) {
             frame_id++;
             
             ret_val = parse_packet(&header,buffer,&ether,&dot1q,&ip,&udp,&dark);
             
+            
             if(ret_val & PARSE_SKIP) {
+                ip_addr_to_string(ip->saddr, string1);
+                ip_addr_to_string(ip->daddr, string2);
+                printf("Skipping %d from %s to %s vlan %d\n",frame_id,string1,string2,DOT1Q_VLAN(dot1q));
+                if(ret_val & PARSE_IGMP_PACKET) {
+                    printf("\tIGMP\n");
+                }
+                fflush(stdout);
+                        
                 continue;
             }
             
@@ -184,18 +204,30 @@ int main(int argc, char** argv) {
 
             *PValue2 = (Word_t) id_array;
             *PValue1 = (Word_t) src_array;
+            
+            
+            
         }
     }
+    
+    printf("got %d pakets\n",frame_id);
+    fflush(stdout);
 
+    printf("Counting\n");
+    fflush(stdout);
     Index1 = 0;
     JLF(PValue1, conversation_array, Index1);
     while (PValue1 != NULL) {
         ip_addr_to_string(Index1, string1);
-        printf("source: %s\n", string1);
+        
 
         src_array = (Pvoid_t) * PValue1;
         Index2 = 0;
         JLF(PValue2, src_array, Index2);
+        JLC(count, src_array, 0, -1);
+        
+        printf("source: %s %d ids (first %d)\n", string1,count,Index2);
+        fflush(stdout);
         while (PValue2 != NULL) {
             id_array = (Pvoid_t) * PValue2;
 
@@ -204,7 +236,7 @@ int main(int argc, char** argv) {
              * Nombre de paquets attendus
              */
             if (count != 4) {
-                //printf("\t id: %d\n", Index2);
+                printf("\t id: %d\n", Index2);
                 
                 JLI(PValue4,save_id_array,Index2);
                 *PValue4=1;
@@ -220,7 +252,7 @@ int main(int argc, char** argv) {
 
                     strftime(string1, BUFFER_SIZE, "%Y-%m-%d %H:%M:%S", timeinfo);
 
-                    //printf("\t\tframe %d vlan %d %s.%06d\n", message_occurence->frame_id, message_occurence->vlan, string1, message_occurence->ts_usec);
+                    printf("\t\tframe %d vlan %d %s.%06d\n", message_occurence->frame_id, message_occurence->vlan, string1, message_occurence->ts_usec);
 
                     Index4 = message_occurence->frame_id;
                     JLI(PValue4,save_frame_array,Index4);
@@ -238,6 +270,8 @@ int main(int argc, char** argv) {
     }
     
     
+    printf("Second pass\n");
+    fflush(stdout);
     rewind(fpr);
     pcap_read_headers(&pcap_hdr, fpr);
     frame_id = 0;
@@ -249,6 +283,7 @@ int main(int argc, char** argv) {
         JLG(PValue1, save_frame_array, Index1);
         
         ret_val = parse_packet(&header,buffer,&ether,&dot1q,&ip,&udp,&dark);
+
             
         if(ret_val & PARSE_SKIP) {
             fwrite(&header,sizeof(pcaprec_hdr_t),1,fpw);
